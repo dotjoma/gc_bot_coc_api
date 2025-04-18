@@ -1,6 +1,6 @@
 # coc_monitor.py
 import asyncio
-from aiohttp import ClientSession
+from aiohttp import ClientSession, TCPConnector
 from datetime import datetime
 import pytz
 import logging
@@ -28,10 +28,13 @@ class CocMonitor:
 
     async def get_clan_war_state(self):
         """Get current war state with proper error handling"""
-        async with ClientSession(headers={
-            "Authorization": f"Bearer {COC_API_TOKEN}",
-            "Accept": "application/json"
-        }) as session:
+        async with ClientSession(
+            connector=TCPConnector(limit=10),  # allow up to 10 connections
+            headers={
+                "Authorization": f"Bearer {COC_API_TOKEN}",
+                "Accept": "application/json"
+            }
+        ) as session:
             # Fetch current war info
             war_data = await self.fetch_data(
                 session, 
@@ -50,12 +53,63 @@ class CocMonitor:
                 "prep_start_time": war_data.get("preparationStartTime")
             }
 
+    async def get_recent_attacks(self, count=1):
+        """Get most recent attack(s) from your clan in current war"""
+        async with ClientSession(
+            connector=TCPConnector(limit=10),  # allow up to 10 connections
+            headers={
+                "Authorization": f"Bearer {COC_API_TOKEN}",
+                "Accept": "application/json"
+            }
+        ) as session:
+            war_data = await self.fetch_data(
+                session,
+                f"/clans/{CLAN_TAG.replace('#', '%23')}/currentwar"
+            )
+
+            if not war_data or war_data.get('state') not in ['inWar', 'warEnded']:
+                logger.warning("No active or ended war data available.")
+                return []
+
+            clan_members = war_data.get('clan', {}).get('members', [])
+            enemy_members = war_data.get('opponent', {}).get('members', [])
+
+            # Create a mapping of enemy tag to name
+            defender_name_map = {member['tag']: member['name'] for member in enemy_members}
+
+            all_attacks = []
+            for member in clan_members:
+                name = member.get('name')
+                tag = member.get('tag')
+                attacks = member.get('attacks', [])
+
+                for attack in attacks:
+                    defender_tag = attack.get('defenderTag')
+                    attack_time = attack.get('order') or 0
+                    all_attacks.append({
+                        'attacker': name,
+                        'attacker_tag': tag,
+                        'stars': attack.get('stars'),
+                        'destruction': attack.get('destructionPercentage'),
+                        'defender_tag': defender_tag,
+                        'defender_name': defender_name_map.get(defender_tag, defender_tag),
+                        'order': attack_time
+                    })
+
+            # Sort by order (higher = more recent)
+            sorted_attacks = sorted(all_attacks, key=lambda x: x['order'], reverse=True)
+
+            return sorted_attacks[:count]
+
     async def get_war_results(self, clan_tag):
         """Get detailed war results when state='warEnded'"""
-        async with ClientSession(headers={
-            "Authorization": f"Bearer {COC_API_TOKEN}",
-            "Accept": "application/json"
-        }) as session:
+        async with ClientSession(
+            connector=TCPConnector(limit=10),  # allow up to 10 connections
+            headers={
+                "Authorization": f"Bearer {COC_API_TOKEN}",
+                "Accept": "application/json"
+            }
+        ) as session:
             war_data = await self.fetch_data(
                 session,
                 f"/clans/{clan_tag.replace('#', '%23')}/currentwar"

@@ -1,5 +1,6 @@
 import pickle
 import os
+import hashlib
 import asyncio
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -12,6 +13,8 @@ import random
 import time
 import logging
 from config import FACEBOOK_EMAIL, FACEBOOK_PASSWORD, FB_GC_ID
+import sqlite3
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 COOKIE_FILE = "fb_session_cookies.pkl"
@@ -19,6 +22,7 @@ COOKIE_FILE = "fb_session_cookies.pkl"
 class FacebookMessenger:
     def __init__(self):
         self.driver = None
+        self.init_database()
 
     def human_type(self, element, text, speed=0.1):
         """Type like a human with random delays"""
@@ -29,6 +33,175 @@ class FacebookMessenger:
     def human_click(self, element):
         """Simulate a human-like click on a web element"""
         ActionChains(self.driver).move_to_element(element).pause(random.uniform(0.1, 0.3)).click().perform()
+
+    def init_database(self):
+        """Initialize SQLite database for message history"""
+        try:
+            with sqlite3.connect('fb_messages.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS message_history (
+                        message_id TEXT PRIMARY KEY,
+                        sender TEXT,
+                        message TEXT,
+                        processed_at TEXT
+                    )
+                ''')
+
+                # Kudos tracking table
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS kudos (
+                        player_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        coc_name TEXT NOT NULL UNIQUE,
+                        total_kudos INTEGER DEFAULT 0,
+                        weekly_kudos INTEGER DEFAULT 0,
+                        last_kudos_date TEXT  
+                    )
+                ''')
+
+                conn.commit()
+            logger.info("Database initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize database: {e}")
+
+    def give_kudos(self, coc_name: str):
+        """Award kudos to a player by their CoC name"""
+        try:
+            with sqlite3.connect('fb_messages.db') as conn:
+                cursor = conn.cursor()
+                
+                # Insert or update player record
+                cursor.execute('''
+                    INSERT INTO kudos (coc_name, total_kudos, weekly_kudos, last_kudos_date)
+                    VALUES (?, 1, 1, DATE('now'))
+                    ON CONFLICT(coc_name) DO UPDATE SET
+                        total_kudos = total_kudos + 1,
+                        weekly_kudos = weekly_kudos + 1,
+                        last_kudos_date = DATE('now')
+                ''', (coc_name,))
+                
+                conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to give kudos: {e}")
+            return False
+    
+    def show_kudos(self, period: str = "total", limit: int = 10) -> str:
+        """
+        Generate formatted kudos leaderboard
+        Args:
+            period: 'total' or 'weekly'
+            limit: Number of entries to show
+        Returns:
+            Formatted leaderboard string
+        """
+        try:
+            results = self.get_kudos_leaderboard(period, limit)
+            
+            if not results:
+                return "No kudos records found"
+                
+            # Create header
+            period_title = "Lifetime" if period == "total" else "Weekly"
+            leaderboard = [
+                f"----- {period_title} Kudos Leaderboard -----",
+                "Rank    Player            Kudos",
+                "--------------------------------"
+            ]
+            
+            # Add entries with aligned columns
+            for rank, (coc_name, score) in enumerate(results, 1):
+                leaderboard.append(f"{rank:<8}{coc_name:<18}{score}")
+                
+            # Add footer
+            leaderboard.append("--------------------------------")
+            leaderboard.append("Type '!seekudos weekly' for weekly rankings")
+            
+            return "\n".join(leaderboard)
+            
+        except Exception as e:
+            logger.error(f"Failed to generate kudos display: {e}")
+            return "Error retrieving leaderboard"
+
+    def get_kudos_leaderboard(self, period: str = "total", limit: int = 10) -> list:
+        """Retrieve raw kudos data from database"""
+        try:
+            column = "total_kudos" if period == "total" else "weekly_kudos"
+            
+            with sqlite3.connect('fb_messages.db') as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute(f'''
+                    SELECT coc_name, {column} as score
+                    FROM kudos
+                    ORDER BY score DESC
+                    LIMIT ?
+                ''', (limit,))
+                
+                return cursor.fetchall()
+                
+        except Exception as e:
+            logger.error(f"Database error in get_kudos_leaderboard: {e}")
+            return []
+
+    def is_message_processed(self, message_id):
+        try:
+            with sqlite3.connect('fb_messages.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1 FROM message_history WHERE message_id = ?", (message_id,))
+                result = cursor.fetchone()
+                if result:
+                    logger.info(f"Message already processed: {message_id}")
+                    return True
+                else:
+                    logger.info(f"Message not processed yet: {message_id}")
+                    return False
+        except Exception as e:
+            logger.error(f"Error checking message history: {e}")
+            return False
+
+
+    def mark_message_as_processed(self, message_id, sender, message):
+        processed_at = datetime.utcnow().isoformat()
+        try:
+            with sqlite3.connect('fb_messages.db') as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO message_history (message_id, sender, message, processed_at)
+                    VALUES (?, ?, ?, ?)
+                ''', (message_id, sender, message, processed_at))
+                conn.commit()
+                logger.info(f"Marked message as processed: {message_id}")
+        except Exception as e:
+            logger.error(f"Failed to mark message as processed: {e}")
+
+
+    def save_processed_message(self, message_id, sender, message):
+        """Save processed message to database"""
+        try:
+            with sqlite3.connect('fb_messages.db') as conn:
+                cursor = conn.cursor()
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute('''
+                    INSERT OR REPLACE INTO message_history (message_id, sender, message, processed_at)
+                    VALUES (?, ?, ?, ?)
+                ''', (message_id, sender, message, current_time))
+                conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save message to database: {e}")
+            return False
+
+    def cleanup_old_messages(self, minutes=1440):
+        """Clean up messages older than specified minutes"""
+        try:
+            with sqlite3.connect('fb_messages.db') as conn:
+                cursor = conn.cursor()
+                cutoff_time = (datetime.now() - timedelta(minutes=minutes)).strftime('%Y-%m-%d %H:%M:%S')
+                cursor.execute('DELETE FROM message_history WHERE processed_at < ?', (cutoff_time,))
+                conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to cleanup old messages: {e}")
 
     def save_cookies(self):
         """Save current session cookies to file."""
@@ -232,13 +405,13 @@ class FacebookMessenger:
             # Make sure we're on the correct messenger page
             if fb_gc_id and fb_gc_id not in self.driver.current_url:
                 self.driver.get(f"https://www.facebook.com/messages/t/{fb_gc_id}")
-                time.sleep(3)  # Wait for page load
+                time.sleep(3)
 
             # Wait for the chat container to load
             chat_container = WebDriverWait(self.driver, 20).until(
                 EC.presence_of_element_located((By.XPATH, "//div[@role='main']"))
             )
-            
+
             # Scroll to bottom of chat to load recent messages
             self.driver.execute_script(
                 "arguments[0].scrollTop = arguments[0].scrollHeight", 
@@ -246,10 +419,8 @@ class FacebookMessenger:
             )
             time.sleep(2)
 
-            # Try to find messages using different selectors
             messages = []
             try:
-                # Find all message containers
                 message_elements = WebDriverWait(self.driver, 10).until(
                     EC.presence_of_all_elements_located((
                         By.XPATH, 
@@ -257,71 +428,89 @@ class FacebookMessenger:
                     ))
                 )
 
-                for element in message_elements[-limit:]:  # Get only the latest messages
-                    try:
-                        # Try to get sender name
-                        try:
-                            sender = element.find_element(
-                                By.XPATH,
-                                ".//a[@role='link']//span[contains(@class, 'x1lliihq')]"
-                            ).text.strip()
-                        except:
-                            sender = "Unknown"
+                logger.info(f"Found {len(message_elements)} message elements")
 
-                        # Try to get message text
+                for element in message_elements[-limit:]:
+                    try:
+                        # Get message text first
                         try:
                             message_text = element.find_element(
                                 By.XPATH,
                                 ".//div[@dir='auto']"
                             ).text.strip()
+                            logger.info(f"Found message text: {message_text}")
                         except:
-                            continue  # Skip if no message text found
+                            continue
 
-                        if message_text:
+                        # Only respond to specific commands
+                        valid_commands = [
+                            "!hey", "!status", "!joke", "!help", 
+                            "!info", "!kudos", "!seekudos"
+                        ]
+                        
+                        # Skip if message does not start with a valid command
+                        if not any(message_text.lower().startswith(command) for command in valid_commands):
+                            logger.info(f"Skipping non-command message: {message_text}")
+                            continue
+
+                        # Get sender name
+                        sender = None
+                        sender_selectors = [
+                            (".//h4[contains(@class, 'x1heor9g')]", "h4"),
+                            (".//span[contains(@class, 'x1lliihq')]", "span"),
+                            (".//a[@role='link']", "link")
+                        ]
+
+                        for selector, selector_type in sender_selectors:
+                            try:
+                                sender_element = element.find_element(By.XPATH, selector)
+                                potential_sender = sender_element.text.strip().rstrip(':')
+
+                                if (potential_sender and 
+                                    len(potential_sender) >= 2 and 
+                                    not potential_sender.startswith('!') and
+                                    not any(skip in potential_sender.lower() for skip in [
+                                        'facebook', 'messenger', 'notification', 'message', 
+                                        'sent', 'you and', 'liked', 'reacted', 'shared', 
+                                        'group', 'bot'
+                                    ])):
+                                    sender = potential_sender
+                                    logger.info(f"Found sender '{sender}' using {selector_type}")
+                                    break
+                            except:
+                                continue
+
+                        if not sender:
+                            continue
+
+                        # Create unique message ID
+                        current_time = datetime.now().strftime('%Y%m%d%H%M%S')
+                        message_id = f"{fb_gc_id}_{sender}_{message_text}_{current_time}"
+
+                        # Check if message was already processed
+                        if not self.is_message_processed(message_id):
+                            self.mark_message_as_processed(message_id, sender, message_text)
                             messages.append({
+                                "message_id": message_id,
                                 "sender": sender,
                                 "message": message_text
                             })
-                            logger.info(f"Found message - {sender}: {message_text}")
+                            logger.info(f"Added new command from {sender}: {message_text}")
 
                     except Exception as msg_error:
-                        logger.debug(f"Error processing message: {str(msg_error)}")
+                        logger.info(f"Error processing message: {str(msg_error)}")
                         continue
 
+                logger.info(f"Returning {len(messages)} messages to process")
+                return messages
+
             except Exception as e:
-                logger.error(f"Error finding messages: {str(e)}")
-                # Try alternative selector
-                try:
-                    message_elements = self.driver.find_elements(
-                        By.XPATH,
-                        "//div[contains(@class, 'x1y1aw1k')]//div[@dir='auto']"
-                    )
-                    
-                    for element in message_elements[-limit:]:
-                        message_text = element.text.strip()
-                        if message_text:
-                            messages.append({
-                                "sender": "Unknown",
-                                "message": message_text
-                            })
-                            logger.info(f"Found message (alternative): {message_text}")
-
-                except Exception as alt_error:
-                    logger.error(f"Alternative selector failed: {str(alt_error)}")
-
-            if not messages:
-                logger.warning("No messages found in chat")
-                # Save debug information
-                self.driver.save_screenshot("chat_debug.png")
-                with open("chat_source.html", "w", encoding="utf-8") as f:
-                    f.write(self.driver.page_source)
-
-            return messages
+                logger.exception(f"Error: {str(e)}")
+                return []
 
         except Exception as e:
-            logger.exception(f"Failed to read messages: {str(e)}")
-            return []
-
+                logger.exception(f"Failed to read messages: {str(e)}")
+                return []
 
     def parse_command(self, text):
         """Parse and respond to known commands"""
@@ -356,74 +545,176 @@ class FacebookMessenger:
                 "What’s the Archer Queen’s favorite movie? 'Legolas: A True Story'.",
                 "Why did the Lava Hound fail math? It always split during division.",
             ])
+        elif text.startswith("!info"):
+            return """Bot Information:
+                Version: 1.0.0  
+                Last Updated: 2025-04-17
+
+                Features:  
+                - Facebook Messenger automation  
+                - Command processing (!help for list)  
+                - Message tracking  
+                - Automated responses  
+
+                Technical:  
+                - Python 3.10+  
+                - Selenium WebDriver  
+                - SQLite database  
+                - 24/7 operation  
+
+                Maintained and Developed By:  
+                Joma  
+
+                Type !help for commands"""
+
+        elif text.startswith("!kudos"):
+            try:
+                # Extract CoC name after command
+                coc_name = text.split(maxsplit=1)[1].strip()
+                if self.give_kudos(coc_name):
+                    return f"Kudos awarded to {coc_name}!"
+                return "Failed to record kudos"
+            except IndexError:
+                return "Usage: !kudos [InGameName]"
+
+        elif text.startswith("!seekudos"):
+            try:
+                # Default to total leaderboard
+                period = "total"
+                
+                # Check for weekly request
+                if "weekly" in text.lower():
+                    period = "weekly"
+                    
+                return self.show_kudos(period=period, limit=15)  # Show top 15
+                
+            except Exception as e:
+                logger.error(f"Kudos command error: {e}")
+                return "Usage: !seekudos [weekly]"
+
         elif text.startswith("!help"):
-            return "Available commands: !hey, !status, !joke, !help"
+            return "Available commands: !hey, !status, !joke, !info, !kudos, !seekudos, !help"
         
         return None
 
-    async def listen_for_commands(self, fb_gc_id=None):
+    def generate_message_id(sender, message, timestamp):
+        combined = f"{sender}|{message.strip().lower()}|{timestamp}"
+        return hashlib.sha256(combined.encode('utf-8')).hexdigest()
 
+    async def listen_for_commands(self, fb_gc_id=None):
         fb_gc_id = str(fb_gc_id) if fb_gc_id is not None else None
-        
+
         self.driver.get(f"https://www.facebook.com/messages/t/{FB_GC_ID}")
         time.sleep(random.uniform(3, 6))
 
         logger.info(f"👂 Listening for commands in group: {fb_gc_id or 'ALL GROUPS'}...")
-        last_seen_messages = set()
 
         while True:
             try:
+                # Cleanup old messages periodically
+                self.cleanup_old_messages(minutes=1440)
+
                 # Fetch messages ONLY from the specified FB_GC_ID
                 messages = await asyncio.to_thread(self.get_latest_messages, fb_gc_id)
                 
                 if messages:
                     for msg in messages:
-                        msg_text = msg["message"].strip()
-                        msg_id = f"{msg['sender']}:{msg_text}"
-                        
-                        if msg_id not in last_seen_messages:
-                            logger.info(f"📨 New message from {msg['sender']}: {msg_text}")
-                            response = self.parse_command(msg_text)
-                            if response:
-                                await asyncio.to_thread(self.send_message, f"{msg['sender']}, {response}")
-                            last_seen_messages.add(msg_id)
-                            
-                            if len(last_seen_messages) > 10:
-                                last_seen_messages.pop()
+                        # 🛑 Skip if message already processed
+                        if self.is_message_processed(msg["message_id"]):
+                            continue
 
-                await asyncio.sleep(5)
-                
+                        response = self.parse_command(msg["message"])
+                        if response:
+                            success = await asyncio.to_thread(
+                                self.send_message,
+                                f"{msg['sender']}, {response}"
+                            )
+
+                            if success:
+                                self.save_processed_message(
+                                    msg["message_id"],
+                                    msg["sender"],
+                                    msg["message"]
+                                )
+                                logger.info(f"✅ Processed command from {msg['sender']}")
+
+                await asyncio.sleep(10)
+                self.driver.get(f"https://www.facebook.com/messages/t/{FB_GC_ID}")
+                time.sleep(3)
+
             except Exception as e:
                 logger.error(f"⚠️ Error in command listener: {str(e)}")
                 await asyncio.sleep(10)
 
+
+    def escape_xpath_text(self, text):
+        """Safely escape text for use inside an XPath expression."""
+        if "'" in text and '"' in text:
+            parts = text.split("'")
+            return "concat('" + "', \"'\", '".join(parts) + "')"
+        elif "'" in text:
+            return f'"{text}"'
+        else:
+            return f"'{text}'"
+
     def send_message(self, message):
-        """Send message to configured group"""
-        logger.info(f"🔄 Sending message to GC: {FB_GC_ID} MESSAGE: {message}")
+        """Send message to configured Facebook group chat"""
+        logger.info(f"🔄 Attempting to send message to GC: {FB_GC_ID}")
+
         if not self.driver:
-            logger.error("Driver not initialized")
+            logger.error("❌ WebDriver not initialized")
             return False
 
         try:
-            # Open Messenger
             self.driver.get(f"https://www.facebook.com/messages/t/{FB_GC_ID}")
-            time.sleep(random.uniform(3, 6))
 
-            # Type and send the message
-            message_box = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, "//div[@role='textbox' and @aria-label='Message']"))
+            # Wait for the page to load fully
+            WebDriverWait(self.driver, 20).until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
             )
-            self.human_type(message_box, message)
-            time.sleep(random.uniform(1, 2))
-            message_box.send_keys(Keys.RETURN)
-            print(f"✅ Message sent to GC: {FB_GC_ID}")
-            time.sleep(random.uniform(2, 5))
+            time.sleep(random.uniform(2, 4))  # Small buffer
 
-            return True
+            # Scroll to bottom to make sure everything is visible
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+
+            # Wait for the message box to be clickable
+            message_box = WebDriverWait(self.driver, 20).until(
+                EC.presence_of_element_located((By.XPATH, "//div[@role='textbox']"))
+            )
+
+            # Use JavaScript to focus the element (helps if it’s not interactable normally)
+            self.driver.execute_script("arguments[0].focus();", message_box)
+
+            # Type the message using your human_type method
+            self.human_type(message_box, message)
+
+            time.sleep(random.uniform(0.5, 1.5))  # Wait before sending
+
+            # Press Enter to send the message
+            message_box.send_keys(Keys.RETURN)
+
+            # Verify if the message is visible in chat (optional, can be flaky)
+            try:
+                safe_text = self.escape_xpath_text(message[:30])
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.XPATH, f"//div[contains(text(), {safe_text})]"))
+                )
+                logger.info(f"✅ Confirmed message sent to GC: {FB_GC_ID}")
+                return True
+            except Exception as verify_error:
+                logger.warning(f"⚠️ Could not verify message was sent: {verify_error}")
+                return True  # Message probably still sent
 
         except Exception as e:
-            logger.error(f"Failed to send message: {str(e)}")
+            logger.error(f"❌ Failed to send message: {str(e)}")
+            try:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.driver.save_screenshot(f"send_message_error_{timestamp}.png")
+                logger.info("📸 Saved screenshot of error state")
+            except Exception as screenshot_err:
+                logger.error(f"Failed to take screenshot: {screenshot_err}")
             return False
+
 
     def close(self):
         """Clean up the driver"""
