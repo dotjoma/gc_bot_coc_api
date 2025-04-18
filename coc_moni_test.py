@@ -34,7 +34,7 @@ def init_db():
 
 def init_attack_log_db():
     logger.info("Initializing war_attacks.db for logging attacks...")
-    conn = sqlite3.connect('war_attacks.db')
+    conn = sqlite3.connect('war_attacks_test.db')
     c = conn.cursor()
 
     # Create table for logging processed attacks
