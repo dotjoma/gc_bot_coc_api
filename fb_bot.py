@@ -273,6 +273,7 @@ class FacebookMessenger:
     def try_cookie_login(self):
         """Attempt login using saved cookies."""
         logger.info("🔄 Attempting to login using saved cookies...")
+
         try:
             self.driver.get("https://www.facebook.com/")
             time.sleep(2)
@@ -609,6 +610,7 @@ class FacebookMessenger:
 
         logger.info(f"👂 Listening for commands in group: {fb_gc_id or 'ALL GROUPS'}...")
 
+        count = 0
         while True:
             try:
                 # Cleanup old messages periodically
@@ -645,6 +647,13 @@ class FacebookMessenger:
             except Exception as e:
                 logger.error(f"⚠️ Error in command listener: {str(e)}")
                 await asyncio.sleep(10)
+            # print(count)
+            # count = count + 1
+            # if count >= 10:
+            #     self.send_message("[RELOGIN_DEBUG] Login again if cookie expired.")
+            #     count = 0
+
+            # await asyncio.sleep(1)
 
 
     def escape_xpath_text(self, text):
@@ -664,6 +673,19 @@ class FacebookMessenger:
         if not self.driver:
             logger.error("❌ WebDriver not initialized")
             return False
+
+        # Verify if the bot is logged in before proceeding
+        if not self.verify_login():
+            logger.error("❌ Not logged in to Facebook. Attempting to log in...")
+
+            # Attempt login if not logged in
+            if not self.login():
+                logger.error("❌ Failed to log in.")
+                return False
+
+            # Once logged in, save the session cookies
+            if not self.save_cookies():
+                logger.warning("⚠️ Failed to save session cookies.")
 
         try:
             self.driver.get(f"https://www.facebook.com/messages/t/{FB_GC_ID}")
@@ -714,7 +736,6 @@ class FacebookMessenger:
             except Exception as screenshot_err:
                 logger.error(f"Failed to take screenshot: {screenshot_err}")
             return False
-
 
     def close(self):
         """Clean up the driver"""

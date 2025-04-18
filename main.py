@@ -41,7 +41,9 @@ def init_attack_log_db():
     c.execute('''
         CREATE TABLE IF NOT EXISTS logged_attacks (
             attacker_tag TEXT,
+            attacker_name TEXT,
             defender_name TEXT,
+            destruction_percentage TEXT,
             attack_order INTEGER,
             PRIMARY KEY (attacker_tag, defender_name, attack_order)
         )
@@ -62,13 +64,13 @@ def is_attack_logged(attacker_tag, defender_name, attack_order):
     conn.close()
     return result is not None
 
-def log_attack(attacker_tag, defender_name, attack_order):
+def log_attack(attacker_tag, attacker_name, defender_name, destruction, attack_order):
     conn = sqlite3.connect('war_attacks.db')
     c = conn.cursor()
     c.execute('''
-        INSERT OR IGNORE INTO logged_attacks (attacker_tag, defender_name, attack_order)
-        VALUES (?, ?, ?)
-    ''', (attacker_tag, defender_name, attack_order))
+        INSERT OR IGNORE INTO logged_attacks (attacker_tag,attacker_name,defender_name,destruction_percentage,attack_order)
+        VALUES (?,?,?,?,?)
+    ''', (attacker_tag,attacker_name,defender_name,destruction,attack_order))
     conn.commit()
     conn.close()
 
@@ -134,6 +136,7 @@ async def recent_attack(coc_monitor, fb_bot):
         recent_attacks = await coc_monitor.get_recent_attacks(count=3)
         for attack in recent_attacks:
             attacker_tag = attack['attacker_tag']
+            attacker_name = attack['attacker']
             defender_name = attack['defender_name']
             attack_order = attack['order']
 
@@ -160,7 +163,7 @@ async def recent_attack(coc_monitor, fb_bot):
 
             print(message)
             await asyncio.to_thread(fb_bot.send_message, message)
-            log_attack(attacker_tag, defender_name, attack_order)
+            log_attack(attacker_tag, attacker_name, defender_name, destruction, attack_order)
 
         await asyncio.sleep(10)
 

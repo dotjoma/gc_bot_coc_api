@@ -8,8 +8,8 @@ CLAN_TAG = "#P0R22UY2"
 # Facebook Configuration
 FACEBOOK_EMAIL = "bastejoma8@gmail.com"
 FACEBOOK_PASSWORD = "09094398645"
-FB_GC_ID = 3180529615358630 # gc of D` EXTINGUISHERS (COC)
-# FB_GC_ID = 29025949653716450 # gc of test coc bot
+# FB_GC_ID = 3180529615358630 # gc of D` EXTINGUISHERS (COC)
+FB_GC_ID = 29025949653716450 # gc of test coc bot
 
 # Timezone Configuration
 TIMEZONE = pytz.timezone("Asia/Manila")
