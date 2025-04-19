@@ -68,7 +68,7 @@ class CocMonitor:
             )
 
             if not war_data or war_data.get('state') not in ['inWar', 'warEnded']:
-                logger.warning("No active or ended war data available.")
+                # logger.warning("No active or ended war data available.")
                 return []
 
             clan_members = war_data.get('clan', {}).get('members', [])

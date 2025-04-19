@@ -45,6 +45,7 @@ def init_attack_log_db():
             defender_name TEXT,
             destruction_percentage TEXT,
             attack_order INTEGER,
+            opponent_clan TEXT,
             PRIMARY KEY (attacker_tag, defender_name, attack_order)
         )
     ''')
@@ -126,7 +127,7 @@ async def recent_attack(coc_monitor, fb_bot):
     ]
 
     perfect_msgs = [
-        "🔥 Flawless victory!",
+        "Flawless victory!",
         "100%! Absolute perfection!",
         "That base didn’t stand a chance!",
         "A triple! You’re unstoppable!"
@@ -274,25 +275,27 @@ async def coc_monitor_loop(coc_monitor, fb_bot):
                                     for i, attacker in enumerate(war_results['clan']['top_attackers'], 1):
                                         attacks = attacker.get('attacks', [])
                                         name = attacker.get('name', 'Unknown Player')
-                                        
+                                        th_level = attacker.get('townhallLevel', '?')  # ✅ FIXED
+
                                         if attacks:
                                             total_stars = sum(a.get('stars', 0) for a in attacks)
-                                            th_level = attacks[0].get('townhallLevel', '?')
                                             message += f"{i}. {name}: {total_stars} stars (TH{th_level})\n"
                                         else:
-                                            message += f"{i}. {name}: No attacks\n"
+                                            message += f"{i}. {name}: No attacks (TH{th_level})\n"
                                 
-                                # Add notable enemies if available
+                               # Add notable enemies if available
                                 if war_results['opponent'].get('top_attackers'):
                                     message += "\n[TOP ENEMY PLAYERS]\n"
                                     for i, attacker in enumerate(war_results['opponent']['top_attackers'][:3], 1):
                                         attacks = attacker.get('attacks', [])
                                         name = attacker.get('name', 'Unknown Enemy')
-                                        
+                                        th_level = attacker.get('townhallLevel', '?')
+
                                         if attacks:
                                             total_stars = sum(a.get('stars', 0) for a in attacks)
-                                            th_level = attacks[0].get('townhallLevel', '?')
                                             message += f"{i}. {name}: {total_stars} stars (TH{th_level})\n"
+                                        else:
+                                            message += f"{i}. {name}: No attacks (TH{th_level})\n"
                                 
                                 message += "\nCheck the game for full details!"
 
