@@ -20,10 +20,39 @@ class CocMonitor:
             async with session.get(url) as response:
                 if response.status == 200:
                     return await response.json()
+                elif response.status == 503:
+                    logger.warning("⚠️ Clash of Clans API is under maintenance.")
+                    return {"maintenance": True}
+                else:
+                    error_body = await response.text()
+                    logger.error(f"API Error {response.status}: {error_body}")
+                    return None
+
                 logger.error(f"API Error: {response.status}")
                 return None
         except Exception as e:
             logger.error(f"Request failed: {str(e)}")
+            return None
+
+    async def get_raid_weekend_data(self):
+        """Get the current capital raid season (raid weekend) data"""
+        endpoint = f"/clans/{CLAN_TAG}/capitalraidseasons"
+        
+        async with ClientSession(headers={
+            "Authorization": f"Bearer {COC_API_TOKEN}",
+            "Accept": "application/json"
+        }) as session:
+            raid_data = await self.fetch_data(session, endpoint)
+            
+            if raid_data:
+                state = raid_data.get('state', 'unknown')
+                start_time = coc_monitor.get_local_time_str(raid_data.get('startTime'))
+                end_time = coc_monitor.get_local_time_str(raid_data.get('endTime'))
+                return {
+                    "state": state,
+                    "start_time": start_time,
+                    "end_time": end_time
+                }
             return None
 
     async def get_clan_war_state(self):
@@ -51,6 +80,31 @@ class CocMonitor:
                 "start_time": war_data.get("startTime"),
                 "end_time": war_data.get("endTime"),
                 "prep_start_time": war_data.get("preparationStartTime")
+            }
+
+    async def get_clan_info(self):
+        """Get general clan info including total war stats"""
+        async with ClientSession(
+            connector=TCPConnector(limit=10),
+            headers={
+                "Authorization": f"Bearer {COC_API_TOKEN}",
+                "Accept": "application/json"
+            }
+        ) as session:
+            data = await self.fetch_data(
+                session,
+                f"/clans/{CLAN_TAG.replace('#', '%23')}"
+            )
+
+            if not data:
+                return None
+
+            return {
+                "name": data.get("name"),
+                "war_wins": data.get("warWins"),
+                "war_losses": data.get("warLosses"),
+                "war_ties": data.get("warTies"),
+                "war_league": data.get("warLeague", {}).get("name")
             }
 
     async def get_recent_attacks(self, count=1):

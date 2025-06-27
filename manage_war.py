@@ -144,8 +144,10 @@ def delete_attack():
     values = tree.item(selected, 'values')
     if values:
         attacker_tag = values[0]
-        defender_name = values[2]
-        attack_order_str = values[4]
+        defender_name = values[1]
+        attack_order_str = values[2]
+
+        messagebox.askyesno("DEBUG", f"Tag: {attacker_tag} Defender: {defender_name} Order: {attack_order_str}")
         
         confirm = messagebox.askyesno("Confirm Deletion", f"Are you sure you want to delete this attack:\n{attacker_tag} vs {defender_name}?")
         if not confirm:

@@ -54,6 +54,59 @@ def init_attack_log_db():
     conn.close()
     logger.info("war_attacks.db initialized.\n")
 
+def init_database_state_db():
+    logger.info("Initializing database_state.db for database state...")
+    conn = sqlite3.connect('database_state.db')
+    c = conn.cursor()
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS state (
+            maintenance_state INTEGER DEFAULT 0,
+            raid_weekend_state INTEGER DEFAULT 0
+        )
+    ''')
+
+    # Make sure there is one row to begin with
+    c.execute('SELECT COUNT(*) FROM state')
+    if c.fetchone()[0] == 0:
+        c.execute('INSERT INTO state (maintenance_state, raid_weekend_state) VALUES (0, 0)')
+
+    conn.commit()
+    conn.close()
+    logger.info("database_state.db initialized.\n")
+
+def set_maintenance_state(state: int):
+    conn = sqlite3.connect('database_state.db')
+    c = conn.cursor()
+    c.execute('UPDATE state SET maintenance_state = ?', (state,))
+    conn.commit()
+    conn.close()
+
+def get_maintenance_state():
+    conn = sqlite3.connect('database_state.db')
+    c = conn.cursor()
+    c.execute('SELECT maintenance_state FROM state')
+    state = c.fetchone()[0]
+    logger.info(f"Current maintenance state: '{state}'")
+    conn.close()
+    return state
+
+def get_raidweekend_state():
+    conn = sqlite3.connect('database_state.db')
+    c = conn.cursor()
+    c.execute('SELECT raid_weekend_state FROM state')
+    value = c.fetchone()[0]
+    logger.info(f"Current raidweekend state: '{value}'")
+    conn.close()
+    return value
+
+def set_raidweekend_state(state: int):
+    conn = sqlite3.connect('database_state.db')
+    c = conn.cursor()
+    c.execute('UPDATE state SET raid_weekend_state = ?', (state,))
+    conn.commit()
+    conn.close()
+
 def is_attack_logged(attacker_tag, defender_name, attack_order):
     conn = sqlite3.connect('war_attacks.db')
     c = conn.cursor()
@@ -65,13 +118,13 @@ def is_attack_logged(attacker_tag, defender_name, attack_order):
     conn.close()
     return result is not None
 
-def log_attack(attacker_tag, attacker_name, defender_name, destruction, attack_order):
+def log_attack(attacker_tag, attacker_name, defender_name, destruction, attack_order, opponent_clan):
     conn = sqlite3.connect('war_attacks.db')
     c = conn.cursor()
     c.execute('''
-        INSERT OR IGNORE INTO logged_attacks (attacker_tag,attacker_name,defender_name,destruction_percentage,attack_order)
-        VALUES (?,?,?,?,?)
-    ''', (attacker_tag,attacker_name,defender_name,destruction,attack_order))
+        INSERT OR IGNORE INTO logged_attacks (attacker_tag,attacker_name,defender_name,destruction_percentage,attack_order,opponent_clan)
+        VALUES (?,?,?,?,?,?)
+    ''', (attacker_tag,attacker_name,defender_name,destruction,attack_order,opponent_clan))
     conn.commit()
     conn.close()
 
@@ -135,6 +188,12 @@ async def recent_attack(coc_monitor, fb_bot):
 
     while True:
         recent_attacks = await coc_monitor.get_recent_attacks(count=3)
+        war_data = await coc_monitor.get_clan_war_state()
+        opponent = ""
+
+        if war_data:
+            opponent = war_data['opponent']
+
         for attack in recent_attacks:
             attacker_tag = attack['attacker_tag']
             attacker_name = attack['attacker']
@@ -164,7 +223,7 @@ async def recent_attack(coc_monitor, fb_bot):
 
             print(message)
             await asyncio.to_thread(fb_bot.send_message, message)
-            log_attack(attacker_tag, attacker_name, defender_name, destruction, attack_order)
+            log_attack(attacker_tag, attacker_name, defender_name, destruction, attack_order, opponent)
 
         await asyncio.sleep(10)
 
@@ -182,6 +241,7 @@ async def main():
     # Create tasks for both operations
     init_db()
     init_attack_log_db()
+    init_database_state_db()
 
     try:
         # Run both tasks concurrently
@@ -200,6 +260,7 @@ async def coc_monitor_loop(coc_monitor, fb_bot):
     while True:
         try:
             war_data = await coc_monitor.get_clan_war_state()
+            raid_data = await coc_monitor.get_raid_weekend_data()
             
             if war_data:
                 new_state = war_data['state']
@@ -248,6 +309,7 @@ async def coc_monitor_loop(coc_monitor, fb_bot):
                     elif new_state == "warEnded":
                         try:
                             war_results = await coc_monitor.get_war_results(CLAN_TAG)
+                            clan_info = await coc_monitor.get_clan_info()
                             
                             if not war_results:
                                 message = "War has ended! Could not fetch detailed results."
@@ -296,8 +358,14 @@ async def coc_monitor_loop(coc_monitor, fb_bot):
                                             message += f"{i}. {name}: {total_stars} stars (TH{th_level})\n"
                                         else:
                                             message += f"{i}. {name}: No attacks (TH{th_level})\n"
-                                
-                                message += "\nCheck the game for full details!"
+
+                                if clan_info:
+                                    message += (
+                                        f"\nThe clan now has a total of {clan_info['war_wins']} wins "
+                                        f"and {clan_info['war_losses']} losses"
+                                    )
+                                    if clan_info['war_ties']:
+                                        message += f", With {clan_info['war_ties']} draws"
 
                         except Exception as e:
                             logger.error(f"Error processing war results: {str(e)}")
@@ -313,10 +381,61 @@ async def coc_monitor_loop(coc_monitor, fb_bot):
                     else:
                         message = f"War state changed to {new_state}"
                     
-                    # Send message via Facebook
-                    # fb_bot.send_message(message)
                     await asyncio.to_thread(fb_bot.send_message, message)
                     logger.info("Message sent to Facebook:\n" + message)
+
+                if war_data.get("maintenance"):
+                    if get_maintenance_state() == 0:
+                        message = (
+                            "A maintenance break is currently in progress.\n"
+                            "Please be advised that game services may be temporarily unavailable."
+                        )
+                        print(message)
+                        await asyncio.to_thread(fb_bot.send_message, message)
+                        set_maintenance_state(1)
+                else:
+                    if get_maintenance_state() == 1:
+                        message = (
+                            "The Clash of Clans maintenance break has ended.\n"
+                            "You can now return to battle and manage your village!"
+                        )
+                        logger.info(message)
+                        await asyncio.to_thread(fb_bot.send_message, message)
+                        set_maintenance_state(0)
+
+            if raid_data:
+                start_time = coc_monitor.get_local_time_str(raid_data['startTime'])
+                end_time = coc_monitor.get_local_time_str(raid_data['endTime'])
+                state = raid_data.get('state', 'unknown')
+                total_attacks = raid_data.get('attacks', 0)
+                total_loot = raid_data.get('loot', 0)
+
+                raid_weekend_state = get_raidweekend_state()
+
+                # Detect start of Raid Weekend
+                if state == "inProgress" and raid_weekend_state == 0:
+                    message = (
+                        f"=== RAID WEEKEND HAS BEGUN ===\n"
+                        f"It will last until: {end_time}\n\n"
+                        f"The gates to the Clan Capital are now open!\n"
+                        f"Clanmates, please coordinate and use all your attacks wisely.\n"
+                        f"Let's aim for maximum progress and upgrades for our Capital!"
+                    )
+                    await asyncio.to_thread(fb_bot.send_message, message)
+                    logger.info("Raid Weekend START message sent.")
+                    set_raidweekend_state(1)
+
+                # Detect end of Raid Weekend
+                elif state == "ended" and raid_weekend_state == 1:
+                    message = (
+                        f"=== RAID WEEKEND HAS ENDED ===\n"
+                        f"Thanks to everyone who participated in the Capital Raids!\n"
+                        f"Now it's time to put that Capital Gold to good use and upgrade our defenses.\n"
+                        f"Great work, team!"
+                    )
+                    await asyncio.to_thread(fb_bot.send_message, message)
+                    logger.info("Raid Weekend END message sent.")
+                    set_raidweekend_state(0)
             
             await asyncio.sleep(CHECK_INTERVAL)
             print(f"♻️ Refreshed at {datetime.today().strftime('%Y-%m-%d %H:%M:%S')}")

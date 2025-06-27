@@ -373,14 +373,40 @@ class FacebookMessenger:
             options = uc.ChromeOptions()
             options.add_argument("--disable-blink-features=AutomationControlled")
             options.add_argument("--start-maximized")
-            self.driver = uc.Chrome(options=options)
+            
+            try:
+                self.driver = uc.Chrome(options=options)
+            except Exception as e:
+                if "This version of ChromeDriver only supports Chrome version" in str(e):
+                    import re
+                    # Extract the required and current Chrome versions from the error message
+                    match = re.search(r'only supports Chrome version (\d+).*Current browser version is (\d+)', str(e))
+                    if match:
+                        required_ver = match.group(1)
+                        current_ver = match.group(2)
+                        error_msg = (
+                            f"❌ Chrome version mismatch detected!\n"
+                            f"  • Your Chrome version: {current_ver}\n"
+                            f"  • Required Chrome version: {required_ver}\n\n"
+                            "Please update your Chrome browser to the latest version:\n"
+                            "1. Open Chrome\n"
+                            "2. Click the three dots (⋮) in the top-right corner\n"
+                            "3. Go to Help > About Google Chrome\n"
+                            "4. Let it update if an update is available\n\n"
+                            "If the issue persists, you can manually download the matching ChromeDriver from:\n"
+                            "https://chromedriver.chromium.org/downloads"
+                        )
+                        logger.error(error_msg)
+                        raise Exception(error_msg) from e
+                # Re-raise the original exception if it's not a version mismatch
+                raise
 
             if self.try_cookie_login():
                 return True
 
             logger.info("🔁 No valid cookies, trying automated login")
 
-             # 🚨 Close the old driver and reopen for fresh login
+            # 🚨 Close the old driver and reopen for fresh login
             self.driver.quit()
 
             options = uc.ChromeOptions()
@@ -715,17 +741,29 @@ class FacebookMessenger:
             # Press Enter to send the message
             message_box.send_keys(Keys.RETURN)
 
-            # Verify if the message is visible in chat (optional, can be flaky)
+            # Verify if any line of the message is visible in chat (optional, can be flaky)
             try:
-                safe_text = self.escape_xpath_text(message[:30])
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH, f"//div[contains(text(), {safe_text})]"))
-                )
-                logger.info(f"✅ Confirmed message sent to GC: {FB_GC_ID}")
+                lines = message.splitlines()
+                for line in lines:
+                    if not line.strip():
+                        continue  # Skip empty lines
+                    try:
+                        safe_text = self.escape_xpath_text(line.strip())
+                        WebDriverWait(self.driver, 5).until(
+                            EC.presence_of_element_located((By.XPATH, f"//*[contains(text(), {safe_text})]"))
+                        )
+                        logger.info(f"✅ Verified message line in chat: {line.strip()}")
+                        return True
+                    except Exception:
+                        continue
+
+                logger.warning("⚠️ Could not verify any line from the message. It was likely still sent.")
                 return True
+
             except Exception as verify_error:
-                logger.warning(f"⚠️ Could not verify message was sent: {verify_error}")
-                return True  # Message probably still sent
+                logger.warning(f"⚠️ Error during message verification: {verify_error}")
+                return True
+
 
         except Exception as e:
             logger.error(f"❌ Failed to send message: {str(e)}")
