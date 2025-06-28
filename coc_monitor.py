@@ -36,23 +36,45 @@ class CocMonitor:
 
     async def get_raid_weekend_data(self):
         """Get the current capital raid season (raid weekend) data"""
-        endpoint = f"/clans/{CLAN_TAG}/capitalraidseasons"
-        
-        async with ClientSession(headers={
-            "Authorization": f"Bearer {COC_API_TOKEN}",
-            "Accept": "application/json"
-        }) as session:
-            raid_data = await self.fetch_data(session, endpoint)
+        try:
+            # Use the clan tag from config directly
+            clan_tag = CLAN_TAG.strip('#').upper()
+            endpoint = f"/clans/%23{clan_tag}/capitalraidseasons?limit=1"
             
-            if raid_data:
-                state = raid_data.get('state', 'unknown')
-                start_time = coc_monitor.get_local_time_str(raid_data.get('startTime'))
-                end_time = coc_monitor.get_local_time_str(raid_data.get('endTime'))
+            logger.debug(f"Fetching raid weekend data from endpoint: {endpoint}")
+            
+            async with ClientSession(headers={
+                "Authorization": f"Bearer {COC_API_TOKEN}",
+                "Accept": "application/json"
+            }) as session:
+                raid_data = await self.fetch_data(session, endpoint)
+                
+                if not raid_data or 'items' not in raid_data or not raid_data['items']:
+                    logger.debug("No active or upcoming raid weekend data found")
+                    return None
+                    
+                # Get the most recent raid weekend
+                latest_raid = raid_data['items'][0]
+                state = latest_raid.get('state', 'unknown')
+                start_time = self.get_local_time_str(latest_raid.get('startTime'))
+                end_time = self.get_local_time_str(latest_raid.get('endTime'))
+                
                 return {
                     "state": state,
+                    "startTime": latest_raid.get('startTime'),  # Keep original for calculations
+                    "endTime": latest_raid.get('endTime'),      # Keep original for calculations
                     "start_time": start_time,
-                    "end_time": end_time
+                    "end_time": end_time,
+                    "capital_total_loot": latest_raid.get('capitalTotalLoot', 0),
+                    "raids_completed": latest_raid.get('raidsCompleted', 0),
+                    "total_attacks": latest_raid.get('totalAttacks', 0),
+                    "enemy_districts_destroyed": latest_raid.get('enemyDistrictsDestroyed', 0),
+                    "offensive_reward": latest_raid.get('offensiveReward', 0),
+                    "defensive_reward": latest_raid.get('defensiveReward', 0)
                 }
+                
+        except Exception as e:
+            logger.error(f"Error in get_raid_weekend_data: {str(e)}")
             return None
 
     async def get_clan_war_state(self):
@@ -101,6 +123,7 @@ class CocMonitor:
 
             return {
                 "name": data.get("name"),
+                "tag": data.get("tag"),
                 "war_wins": data.get("warWins"),
                 "war_losses": data.get("warLosses"),
                 "war_ties": data.get("warTies"),

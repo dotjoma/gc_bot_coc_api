@@ -247,7 +247,7 @@ async def main():
         # Run both tasks concurrently
         await asyncio.gather(
             coc_monitor_loop(coc_monitor, fb_bot),
-            # fb_bot.listen_for_commands(FB_GC_ID),
+            fb_bot.listen_for_commands(FB_GC_ID),
             recent_attack(coc_monitor, fb_bot)
         )
     except KeyboardInterrupt:
@@ -260,7 +260,12 @@ async def coc_monitor_loop(coc_monitor, fb_bot):
     while True:
         try:
             war_data = await coc_monitor.get_clan_war_state()
-            raid_data = await coc_monitor.get_raid_weekend_data()
+            
+            # Only fetch raid weekend data if we don't have war data or if we're not in war
+            if not war_data or war_data.get('state') != 'inWar':
+                raid_data = await coc_monitor.get_raid_weekend_data()
+            else:
+                raid_data = None
             
             if war_data:
                 new_state = war_data['state']
